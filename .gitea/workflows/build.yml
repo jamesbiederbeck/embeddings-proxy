@@ -1,0 +1,55 @@
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: git.hiddencove.xyz/victor/dind_runner:latest
+      volumes:
+        - toolcache:/toolcache
+    env:
+      RUNNER_TOOL_CACHE: /toolcache
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Notify build start
+        uses: https://git.hiddencove.xyz/actions/gotify@main
+        with:
+          url: "https://gotify.hiddencove.xyz"
+          token: "${{ secrets.GOTIFY_TOKEN }}"
+          title: "Build Started on ${{ gitea.repository }}"
+          message: "Build started on ${{ gitea.repository }} ${{ gitea.ref }}\nhttps://git.hiddencove.xyz/victor/embeddings-proxy/actions"
+
+      - name: Login to registry
+        uses: docker/login-action@v3
+        with:
+          username: ${{ vars.HOMELAB_ACTIONS_USER }}
+          password: ${{ secrets.HOMELAB_ACTIONS_PASSWORD }}
+          registry: git.hiddencove.xyz
+
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: git.hiddencove.xyz/${{ gitea.repository }}
+          tags: |
+            type=ref,event=tag
+
+      - name: Build and push
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+
+      - name: Notify build finish
+        if: always()
+        uses: https://git.hiddencove.xyz/actions/gotify@main
+        with:
+          url: "https://gotify.hiddencove.xyz"
+          token: "${{ secrets.GOTIFY_TOKEN }}"
+          title: "Build Finished on ${{ gitea.repository }}"
+          message: "Build finished on ${{ gitea.repository }} ${{ gitea.ref }}: ${{ job.status }}\nhttps://git.hiddencove.xyz/victor/embeddings-proxy/actions"
