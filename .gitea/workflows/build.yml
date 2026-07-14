@@ -26,8 +26,8 @@ jobs:
       - name: Login to registry
         uses: docker/login-action@v3
         with:
-          username: ${{ vars.HOMELAB_ACTIONS_USER }}
-          password: ${{ secrets.HOMELAB_ACTIONS_PASSWORD }}
+          username: ${{ vars.GITEAUSERNAME }}
+          password: ${{ secrets.GITEAPASSWORD }}
           registry: git.hiddencove.xyz
 
       - name: Docker meta

@@ -7,13 +7,14 @@ import redis.asyncio as redis
 from fastapi import FastAPI
 from pydantic import BaseModel
 
-EMBEDDINGS_URL = os.environ["EMBEDDINGS_URL"]
-MODEL_NAME = os.environ["MODEL_NAME"]
+from backends import build_backend
+
 REDIS_URL = os.environ["REDIS_URL"]
 
 app = FastAPI()
 cache = redis.from_url(REDIS_URL, decode_responses=True)
 client = httpx.AsyncClient(timeout=30.0)
+backend = build_backend(client)
 
 
 class VectorRequest(BaseModel):
@@ -21,7 +22,7 @@ class VectorRequest(BaseModel):
 
 
 def cache_key(text: str) -> str:
-    digest = hashlib.sha256(f"{MODEL_NAME}:{text}".encode()).hexdigest()
+    digest = hashlib.sha256(f"{backend.name}:{backend.model_name}:{text}".encode()).hexdigest()
     return f"embedding:{digest}"
 
 
@@ -34,12 +35,10 @@ async def vectors(req: VectorRequest):
         vector = json.loads(cached)
         return {"text": req.text, "vector": vector, "dim": len(vector), "cached": True}
 
-    resp = await client.post(f"{EMBEDDINGS_URL}/vectors", json={"text": req.text})
-    resp.raise_for_status()
-    data = resp.json()
+    vector = await backend.embed(req.text)
 
-    await cache.set(key, json.dumps(data["vector"]))
-    return {**data, "cached": False}
+    await cache.set(key, json.dumps(vector))
+    return {"text": req.text, "vector": vector, "dim": len(vector), "cached": False}
 
 
 @app.get("/.well-known/ready")
