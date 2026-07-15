@@ -59,6 +59,6 @@ Tests mock HTTP via `httpx.MockTransport` and Redis via `fakeredis`; `tests/conf
 
 ## Deployment
 
-Built as a Docker image (Python 3.12-slim, deps installed via `uv sync --locked --no-dev`). Exposes port `8081`. Not intended to be run standalone outside a container. Build with `--build-arg UV_SYNC_EXTRA_ARGS="--extra qdrant"` to include vector-store support in the image.
+Built as a Docker image (Python 3.12-slim, deps installed via `uv sync --locked --no-dev`). Exposes port `8081`. Not intended to be run standalone outside a container. Build with `--build-arg UV_SYNC_EXTRA_ARGS="--extra qdrant"` to include vector-store support in the image — the CI build workflow passes this, so the published image (`v0.2.1+`) supports `VECTOR_STORE=qdrant` out of the box.
 
 CI: pushes to any branch run ruff + pytest (`.gitea/workflows/test.yml`); pushing a tag matching `v*` triggers the build workflow (`.gitea/workflows/build.yml`) that pushes the image to `git.hiddencove.xyz/victor/embeddings-proxy`.

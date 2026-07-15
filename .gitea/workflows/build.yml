@@ -44,6 +44,9 @@ jobs:
           context: .
           push: true
           tags: ${{ steps.meta.outputs.tags }}
+          # Bake in qdrant-client so VECTOR_STORE=qdrant works with the published image.
+          build-args: |
+            UV_SYNC_EXTRA_ARGS=--extra qdrant
 
       - name: Notify build finish
         if: always()
