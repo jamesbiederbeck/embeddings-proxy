@@ -78,6 +78,15 @@ uv run uvicorn app:app --host 0.0.0.0 --port 8081 --reload
 
 Built and run as a container; not intended to be run standalone. Expects a Redis instance and the configured backend reachable over the network. Exposes port `8081`.
 
+`docker-compose.yml` runs the full stack — proxy, Redis (`--appendonly yes`), and a `transformers-inference` backend with `all-MiniLM-L6-v2`:
+
+```
+docker compose up                    # caching proxy only
+docker compose --profile search up   # also start Qdrant (uncomment the VECTOR_STORE env vars)
+```
+
+The proxy's compose healthcheck hits `/.well-known/ready`, so the container only reports healthy when Redis and the backend are reachable.
+
 ## CI
 
 - Pushes to any branch run lint + tests (`.gitea/workflows/test.yml`).

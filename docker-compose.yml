@@ -1,0 +1,46 @@
+services:
+  proxy:
+    build: .
+    image: git.hiddencove.xyz/victor/embeddings-proxy:latest
+    ports:
+      - "8081:8081"
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      # BACKEND defaults to transformers-inference; see README for openai/llamacpp.
+      EMBEDDINGS_URL: http://embeddings:8080
+      MODEL_NAME: sentence-transformers/all-MiniLM-L6-v2
+      # Optional semantic search (build the image with
+      # --build-arg UV_SYNC_EXTRA_ARGS="--extra qdrant" and start with --profile search):
+      # VECTOR_STORE: qdrant
+      # QDRANT_URL: http://qdrant:6333
+      # QDRANT_COLLECTION: texts
+    depends_on:
+      - redis
+      - embeddings
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8081/.well-known/ready', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+
+  embeddings:
+    # Model baked into the image tag — must match MODEL_NAME above.
+    image: semitechnologies/transformers-inference:sentence-transformers-all-MiniLM-L6-v2
+
+  # Optional vector store: docker compose --profile search up
+  qdrant:
+    image: qdrant/qdrant:latest
+    profiles: ["search"]
+    volumes:
+      - qdrant-data:/qdrant/storage
+
+volumes:
+  redis-data:
+  qdrant-data:
