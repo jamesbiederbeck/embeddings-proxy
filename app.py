@@ -36,6 +36,11 @@ class SearchRequest(BaseModel):
     top_k: int = 5
 
 
+class EmbeddingsRequest(BaseModel):
+    input: str | list[str]
+    model: str | None = None
+
+
 def cache_key(text: str) -> str:
     digest = hashlib.sha256(f"{backend.name}:{backend.model_name}:{text}".encode()).hexdigest()
     return f"embedding:{digest}"
@@ -79,6 +84,22 @@ async def search(req: SearchRequest):
     vector, _ = await get_vector(req.text)
     results = await vector_store.search(vector, req.top_k)
     return {"text": req.text, "results": results}
+
+
+@app.post("/v1/embeddings")
+async def embeddings(req: EmbeddingsRequest):
+    texts = [req.input] if isinstance(req.input, str) else req.input
+    vectors = await asyncio.gather(*(get_vector(text) for text in texts))
+
+    return {
+        "object": "list",
+        "data": [
+            {"object": "embedding", "embedding": vector, "index": i}
+            for i, (vector, _cached) in enumerate(vectors)
+        ],
+        "model": req.model or backend.model_name,
+        "usage": {"prompt_tokens": 0, "total_tokens": 0},
+    }
 
 
 async def _probe(name: str, coro, checks: dict[str, str]) -> bool:

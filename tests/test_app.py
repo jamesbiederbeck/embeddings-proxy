@@ -70,6 +70,29 @@ async def test_search_returns_501_without_vector_store(api):
     assert resp.status_code == 501
 
 
+async def test_embeddings_single_input(api, stub_backend):
+    resp = await api.post("/v1/embeddings", json={"input": "hello"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["object"] == "list"
+    assert body["data"] == [{"object": "embedding", "embedding": [1.0, 2.0, 3.0], "index": 0}]
+    assert body["model"] == "stub-model"
+    assert body["usage"] == {"prompt_tokens": 0, "total_tokens": 0}
+
+
+async def test_embeddings_batch_input_preserves_order(api, stub_backend):
+    resp = await api.post("/v1/embeddings", json={"input": ["one", "two"]})
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert [d["index"] for d in data] == [0, 1]
+    assert stub_backend.calls == 2
+
+
+async def test_embeddings_model_override(api):
+    resp = await api.post("/v1/embeddings", json={"input": "hello", "model": "custom"})
+    assert resp.json()["model"] == "custom"
+
+
 async def test_ready_ok(api):
     resp = await api.get("/.well-known/ready")
     assert resp.status_code == 200

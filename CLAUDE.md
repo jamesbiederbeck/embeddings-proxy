@@ -22,6 +22,7 @@ Three modules:
 
 - `POST /vectors` — `{"text": "..."}` → `{"text", "vector", "dim", "cached"}`. Redis first; on miss calls `backend.embed()` and writes back. If a vector store is configured, upserts the vector (best-effort — store failures are logged, not surfaced, except dimension mismatches which fail loudly).
 - `POST /search` — `{"text": "...", "top_k": N}` → nearest neighbours with score + payload. `501` when no vector store is configured.
+- `POST /v1/embeddings` — OpenAI-compatible adapter: `{"input": "..." | ["...", ...], "model": "..."?}` → `{"object": "list", "data": [{"object": "embedding", "embedding": [...], "index": i}, ...], "model", "usage"}`. Goes through the same Redis cache/backend path as `/vectors` (batched with `asyncio.gather`, order preserved) but has no vector-store side effect — it's a pure embeddings passthrough for OpenAI-client-compatible callers (LangChain, LiteLLM, etc.). `model` in the response echoes the request's `model` if given, else `backend.model_name`; it's not validated against the configured backend. `usage` token counts are always `0` — no tokenizer is wired up.
 - `GET /.well-known/ready` — readiness: pings Redis + backend (+ vector store if configured), each time-boxed to `PROBE_TIMEOUT` (2s); `503` with per-check detail on failure.
 - `GET /.well-known/live` — liveness: always `200`. Use for restart probes so backend blips don't restart-loop the container.
 
