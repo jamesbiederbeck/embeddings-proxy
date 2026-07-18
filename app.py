@@ -13,8 +13,9 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, model_validator
 
 import provenance
-from backends import build_backend
-from vector_store import DimensionMismatchError, build_vector_store, point_id
+from backends import EmbeddingBackend, build_backends
+from config import load_config
+from vector_store import DimensionMismatchError, build_vector_stores, point_id
 
 REDIS_URL = os.environ["REDIS_URL"]
 
@@ -24,10 +25,13 @@ PROBE_TIMEOUT = 2.0
 logger = logging.getLogger("embeddings-proxy")
 
 app = FastAPI()
+config = load_config()
 cache = redis.from_url(REDIS_URL, decode_responses=True)
 client = httpx.AsyncClient(timeout=30.0)
-backend = build_backend(client)
-vector_store = build_vector_store()
+backends = build_backends(client, config.backends)
+backend = backends[0]
+vector_stores = build_vector_stores(config.vector_stores)
+vector_store = vector_stores[0] if vector_stores else None
 
 
 class VectorRequest(BaseModel):
@@ -59,33 +63,40 @@ class EmbeddingsRequest(BaseModel):
     model: str | None = None
 
 
-def cache_key(text: str) -> str:
-    digest = hashlib.sha256(f"{backend.name}:{backend.model_name}:{text}".encode()).hexdigest()
+def cache_key(b: EmbeddingBackend, text: str) -> str:
+    # Keyed by type (not instance name) so same-type instances serving the same model
+    # share cache — and the bytes stay identical to the pre-0.5 scheme, no invalidation.
+    # embedding_task joins the key only when set: task-distinct vectors must not collide.
+    parts = [b.type, b.model] + ([b.embedding_task] if b.embedding_task else []) + [text]
+    digest = hashlib.sha256(":".join(parts).encode()).hexdigest()
     return f"embedding:{digest}"
 
 
-async def get_vector(text: str) -> tuple[list[float], bool]:
-    key = cache_key(text)
+async def get_vector(b: EmbeddingBackend, text: str) -> tuple[list[float], bool]:
+    key = cache_key(b, text)
 
     cached = await cache.get(key)
     if cached is not None:
         return json.loads(cached), True
 
-    vector = await backend.embed(text)
+    vector = await b.embed(text)
     await cache.set(key, json.dumps(vector))
     return vector, False
 
 
 @app.post("/vectors")
 async def vectors(req: VectorRequest):
-    vector, cached = await get_vector(req.text)
+    vector, cached = await get_vector(backend, req.text)
 
     if vector_store is not None:
         try:
             # The vector itself is content-addressed and already in the store once it's
             # been embedded once; only a genuine cache miss needs to (re)write it.
             if not cached:
-                await vector_store.upsert(req.text, vector, req.metadata)
+                metadata = req.metadata
+                if backend.embedding_task is not None:
+                    metadata = {**(metadata or {}), "embedding_task": backend.embedding_task}
+                await vector_store.upsert(req.text, vector, metadata)
             # Location provenance runs on every call, hit or miss — even a cached vector
             # needs its new location recorded.
             if req.location is not None:
@@ -110,7 +121,7 @@ async def search(req: SearchRequest):
             status_code=501, detail="No vector store configured (set VECTOR_STORE=qdrant)"
         )
 
-    vector, _ = await get_vector(req.text)
+    vector, _ = await get_vector(backend, req.text)
     results = await vector_store.search(vector, req.top_k, req.scope)
     locations = await provenance.get_locations(cache, [r["id"] for r in results])
     # "content_hash"/"scopes" are this proxy's own bookkeeping fields, not caller metadata.
@@ -155,7 +166,7 @@ async def delete_location(req: LocationRequest):
 @app.post("/v1/embeddings")
 async def embeddings(req: EmbeddingsRequest):
     texts = [req.input] if isinstance(req.input, str) else req.input
-    vectors = await asyncio.gather(*(get_vector(text) for text in texts))
+    vectors = await asyncio.gather(*(get_vector(backend, text) for text in texts))
 
     return {
         "object": "list",
@@ -163,7 +174,7 @@ async def embeddings(req: EmbeddingsRequest):
             {"object": "embedding", "embedding": vector, "index": i}
             for i, (vector, _cached) in enumerate(vectors)
         ],
-        "model": req.model or backend.model_name,
+        "model": req.model or backend.model,
         "usage": {"prompt_tokens": 0, "total_tokens": 0},
     }
 

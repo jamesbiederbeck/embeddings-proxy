@@ -19,6 +19,7 @@ class FakeCollectionInfo:
 def make_store(collection_exists=False, existing_dim=None):
     store = QdrantVectorStore.__new__(QdrantVectorStore)
     store.collection = "test-collection"
+    store.base_metadata = {}
     store._ensured = False
     store.client = MagicMock()
     store.client.collection_exists = AsyncMock(return_value=collection_exists)

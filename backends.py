@@ -1,29 +1,51 @@
-import os
-from typing import Protocol
-
 import httpx
+
+from config import EmbeddingBackendConfig
 
 # Short timeout for readiness probes so a slow upstream can't hang the probe.
 PROBE_TIMEOUT = 2.0
 
 
-class Backend(Protocol):
-    name: str
-    model_name: str
+class Backend:
+    """Anything the proxy talks to and health-checks: embedding upstreams and
+    vector stores alike. `type` is the implementation kind (part of the cache
+    key); `name` is the per-instance config name (unique across the registry).
+    """
 
-    async def embed(self, text: str) -> list[float]: ...
+    type: str
 
-    async def check(self) -> None: ...
+    def __init__(self, name: str, model: str):
+        self.name = name
+        self.model = model
+
+    async def check(self) -> None:
+        raise NotImplementedError
 
 
-class TransformersInferenceBackend:
+class EmbeddingBackend(Backend):
+    def __init__(self, name: str, model: str, embedding_task: str | None = None):
+        super().__init__(name, model)
+        self.embedding_task = embedding_task
+
+    async def embed(self, text: str) -> list[float]:
+        raise NotImplementedError
+
+
+class TransformersInferenceBackend(EmbeddingBackend):
     """Backend for semitechnologies/transformers-inference."""
 
-    name = "transformers-inference"
+    type = "transformers-inference"
 
-    def __init__(self, client: httpx.AsyncClient, embeddings_url: str, model_name: str):
+    def __init__(
+        self,
+        client: httpx.AsyncClient,
+        embeddings_url: str,
+        model: str,
+        name: str | None = None,
+        embedding_task: str | None = None,
+    ):
+        super().__init__(name or self.type, model, embedding_task)
         self.embeddings_url = embeddings_url.rstrip("/")
-        self.model_name = model_name
         self.client = client
 
     async def embed(self, text: str) -> list[float]:
@@ -38,20 +60,22 @@ class TransformersInferenceBackend:
         resp.raise_for_status()
 
 
-class OpenAIBackend:
+class OpenAIBackend(EmbeddingBackend):
     """Backend for OpenAI-compatible POST /v1/embeddings endpoints."""
 
-    name = "openai"
+    type = "openai"
 
     def __init__(
         self,
         client: httpx.AsyncClient,
         base_url: str,
-        model_name: str,
+        model: str,
         api_key: str | None = None,
+        name: str | None = None,
+        embedding_task: str | None = None,
     ):
+        super().__init__(name or self.type, model, embedding_task)
         self.base_url = base_url.rstrip("/")
-        self.model_name = model_name
         self.api_key = api_key
         self.client = client
 
@@ -64,7 +88,7 @@ class OpenAIBackend:
     async def embed(self, text: str) -> list[float]:
         resp = await self.client.post(
             f"{self.base_url}/v1/embeddings",
-            json={"input": text, "model": self.model_name},
+            json={"input": text, "model": self.model},
             headers=self._headers,
         )
         resp.raise_for_status()
@@ -87,29 +111,36 @@ class LlamaCppBackend(OpenAIBackend):
     started with --embeddings.
     """
 
-    name = "llamacpp"
+    type = "llamacpp"
 
 
-def build_backend(client: httpx.AsyncClient) -> Backend:
-    backend_name = os.environ.get("BACKEND", "transformers-inference")
-
-    if backend_name == "transformers-inference":
+def build_backend(client: httpx.AsyncClient, cfg: EmbeddingBackendConfig) -> EmbeddingBackend:
+    if cfg.type == "transformers-inference":
         return TransformersInferenceBackend(
-            client, os.environ["EMBEDDINGS_URL"], os.environ["MODEL_NAME"]
+            client, cfg.url, cfg.model, name=cfg.name, embedding_task=cfg.embedding_task
         )
-    if backend_name == "openai":
+    if cfg.type == "openai":
         return OpenAIBackend(
             client,
-            os.environ.get("OPENAI_BASE_URL", "https://api.openai.com"),
-            os.environ["MODEL_NAME"],
-            os.environ["OPENAI_API_KEY"],
+            cfg.url,
+            cfg.model,
+            cfg.api_key,
+            name=cfg.name,
+            embedding_task=cfg.embedding_task,
         )
-    if backend_name == "llamacpp":
+    if cfg.type == "llamacpp":
         return LlamaCppBackend(
             client,
-            os.environ["EMBEDDINGS_URL"],
-            os.environ["MODEL_NAME"],
-            os.environ.get("OPENAI_API_KEY"),
+            cfg.url,
+            cfg.model,
+            cfg.api_key,
+            name=cfg.name,
+            embedding_task=cfg.embedding_task,
         )
+    raise ValueError(f"Unknown backend type: {cfg.type!r}")
 
-    raise ValueError(f"Unknown BACKEND: {backend_name!r}")
+
+def build_backends(
+    client: httpx.AsyncClient, cfgs: list[EmbeddingBackendConfig]
+) -> list[EmbeddingBackend]:
+    return [build_backend(client, cfg) for cfg in cfgs]

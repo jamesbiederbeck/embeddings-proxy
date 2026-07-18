@@ -66,6 +66,7 @@ source = { virtual = "." }
 dependencies = [
     { name = "fastapi" },
     { name = "httpx" },
+    { name = "pyyaml" },
     { name = "redis" },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -87,6 +88,7 @@ dev = [
 requires-dist = [
     { name = "fastapi", specifier = ">=0.115,<0.116" },
     { name = "httpx", specifier = ">=0.27,<0.28" },
+    { name = "pyyaml", specifier = ">=6,<7" },
     { name = "qdrant-client", marker = "extra == 'qdrant'", specifier = ">=1.10,<2" },
     { name = "redis", specifier = ">=5,<6" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32,<0.33" },

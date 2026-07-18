@@ -1,31 +1,13 @@
 import hashlib
-import os
 import uuid
-from typing import Any, Protocol
+from typing import Any
+
+from backends import Backend
+from config import VectorStoreConfig
 
 
 class DimensionMismatchError(Exception):
     """The existing collection's vector size doesn't match what the backend produces."""
-
-
-class VectorStore(Protocol):
-    async def upsert(
-        self,
-        text: str,
-        vector: list[float],
-        metadata: dict[str, Any] | None = None,
-        scopes: list[str] | None = None,
-    ) -> None: ...
-
-    async def search(
-        self, vector: list[float], top_k: int, scope: str | None = None
-    ) -> list[dict[str, Any]]: ...
-
-    async def set_scopes(self, point_id: str, scopes: list[str]) -> None: ...
-
-    async def delete(self, point_id: str) -> None: ...
-
-    async def check(self) -> None: ...
 
 
 def point_id(text: str) -> str:
@@ -33,20 +15,58 @@ def point_id(text: str) -> str:
     return str(uuid.UUID(hashlib.sha256(text.encode()).hexdigest()[:32]))
 
 
-class QdrantVectorStore:
+class VectorStoreBackend(Backend):
+    """A vector store is a backend too: it has a name, is tied to the embedding
+    model whose vectors its collection holds (the routing key for /vectors and
+    /search), and gets health-polled like any other backend.
+    """
+
+    async def upsert(
+        self,
+        text: str,
+        vector: list[float],
+        metadata: dict[str, Any] | None = None,
+        scopes: list[str] | None = None,
+    ) -> None:
+        raise NotImplementedError
+
+    async def search(
+        self, vector: list[float], top_k: int, scope: str | None = None
+    ) -> list[dict[str, Any]]:
+        raise NotImplementedError
+
+    async def set_scopes(self, point_id: str, scopes: list[str]) -> None:
+        raise NotImplementedError
+
+    async def delete(self, point_id: str) -> None:
+        raise NotImplementedError
+
+
+class QdrantVectorStore(VectorStoreBackend):
     """Stores vectors in a Qdrant collection, auto-created on first use.
 
     qdrant-client is imported lazily so the dependency is only needed when
-    VECTOR_STORE=qdrant is actually configured.
+    a vector store is actually configured.
     """
 
-    def __init__(self, url: str, collection: str):
+    type = "qdrant"
+
+    def __init__(
+        self,
+        url: str,
+        collection: str,
+        model: str = "",
+        name: str | None = None,
+        base_metadata: dict[str, Any] | None = None,
+    ):
         from qdrant_client import AsyncQdrantClient
 
+        super().__init__(name or self.type, model)
         # check_compatibility=False: don't contact the server at construction time,
         # so the proxy can start while Qdrant is down (indexing is best-effort anyway).
         self.client = AsyncQdrantClient(url=url, timeout=10, check_compatibility=False)
         self.collection = collection
+        self.base_metadata = base_metadata or {}
         self._ensured = False
 
     async def _ensure_collection(self, dim: int) -> None:
@@ -90,9 +110,11 @@ class QdrantVectorStore:
         await self._ensure_collection(len(vector))
         from qdrant_client import models
 
+        # Precedence: config base_metadata < request metadata < the proxy's own keys.
         # "text" last so it always wins if caller-supplied metadata happens to collide —
         # every payload this proxy writes must keep a real text key for /search to rely on.
         payload = {
+            **self.base_metadata,
             **(metadata or {}),
             "content_hash": hashlib.sha256(text.encode()).hexdigest(),
             "scopes": scopes or [],
@@ -135,12 +157,13 @@ class QdrantVectorStore:
         await self.client.get_collections()
 
 
-def build_vector_store() -> VectorStore | None:
-    store_name = os.environ.get("VECTOR_STORE")
+def build_vector_store(cfg: VectorStoreConfig) -> VectorStoreBackend:
+    if cfg.type == "qdrant":
+        return QdrantVectorStore(
+            cfg.url, cfg.collection, model=cfg.model, name=cfg.name, base_metadata=cfg.metadata
+        )
+    raise ValueError(f"Unknown vector store type: {cfg.type!r}")
 
-    if not store_name:
-        return None
-    if store_name == "qdrant":
-        return QdrantVectorStore(os.environ["QDRANT_URL"], os.environ["QDRANT_COLLECTION"])
 
-    raise ValueError(f"Unknown VECTOR_STORE: {store_name!r}")
+def build_vector_stores(cfgs: list[VectorStoreConfig]) -> list[VectorStoreBackend]:
+    return [build_vector_store(cfg) for cfg in cfgs]

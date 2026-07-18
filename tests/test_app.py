@@ -8,7 +8,9 @@ from vector_store import point_id
 
 class StubBackend:
     name = "stub"
-    model_name = "stub-model"
+    type = "stub"
+    model = "stub-model"
+    embedding_task = None
 
     def __init__(self, vector=None, healthy=True):
         self.vector = vector or [1.0, 2.0, 3.0]
