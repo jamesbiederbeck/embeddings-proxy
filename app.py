@@ -4,14 +4,17 @@ import json
 import logging
 import os
 
+from typing import Any
+
 import httpx
 import redis.asyncio as redis
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
+import provenance
 from backends import build_backend
-from vector_store import DimensionMismatchError, build_vector_store
+from vector_store import DimensionMismatchError, build_vector_store, point_id
 
 REDIS_URL = os.environ["REDIS_URL"]
 
@@ -29,11 +32,26 @@ vector_store = build_vector_store()
 
 class VectorRequest(BaseModel):
     text: str
+    metadata: dict[str, Any] | None = None
+    location: str | None = None
+    scope: str | None = None
+    location_metadata: dict[str, Any] | None = None
+
+    @model_validator(mode="after")
+    def _scope_required_with_location(self):
+        if self.location is not None and self.scope is None:
+            raise ValueError("scope is required when location is set")
+        return self
 
 
 class SearchRequest(BaseModel):
     text: str
     top_k: int = 5
+    scope: str | None = None
+
+
+class LocationRequest(BaseModel):
+    uri: str
 
 
 class EmbeddingsRequest(BaseModel):
@@ -64,7 +82,18 @@ async def vectors(req: VectorRequest):
 
     if vector_store is not None:
         try:
-            await vector_store.upsert(req.text, vector)
+            # The vector itself is content-addressed and already in the store once it's
+            # been embedded once; only a genuine cache miss needs to (re)write it.
+            if not cached:
+                await vector_store.upsert(req.text, vector, req.metadata)
+            # Location provenance runs on every call, hit or miss — even a cached vector
+            # needs its new location recorded.
+            if req.location is not None:
+                pid = point_id(req.text)
+                scopes = await provenance.add_location(
+                    cache, pid, req.location, req.scope, req.location_metadata
+                )
+                await vector_store.set_scopes(pid, scopes)
         except DimensionMismatchError:
             raise
         except Exception:
@@ -82,8 +111,45 @@ async def search(req: SearchRequest):
         )
 
     vector, _ = await get_vector(req.text)
-    results = await vector_store.search(vector, req.top_k)
-    return {"text": req.text, "results": results}
+    results = await vector_store.search(vector, req.top_k, req.scope)
+    locations = await provenance.get_locations(cache, [r["id"] for r in results])
+    # "content_hash"/"scopes" are this proxy's own bookkeeping fields, not caller metadata.
+    reserved = {"text", "content_hash", "scopes"}
+    return {
+        "query": req.text,
+        "results": [
+            {
+                # payload["text"] assumes every payload was written by this proxy (true for
+                # all current write paths); a foreign point without a "text" key 500s here
+                # rather than silently returning a malformed Document.
+                "page_content": r["payload"]["text"],
+                "metadata": {k: v for k, v in r["payload"].items() if k not in reserved},
+                "locations": locations.get(r["id"], []),
+                "score": r["score"],
+            }
+            for r in results
+        ],
+    }
+
+
+@app.delete("/locations")
+async def delete_location(req: LocationRequest):
+    if vector_store is None:
+        raise HTTPException(
+            status_code=501, detail="No vector store configured (set VECTOR_STORE=qdrant)"
+        )
+
+    affected = await provenance.remove_location(cache, req.uri)
+    for pid, scopes, is_orphaned in affected:
+        try:
+            if is_orphaned:
+                await vector_store.delete(pid)
+            else:
+                await vector_store.set_scopes(pid, scopes)
+        except Exception:
+            logger.exception("vector store cleanup failed for point %s", pid)
+
+    return {"uri": req.uri, "affected": len(affected)}
 
 
 @app.post("/v1/embeddings")

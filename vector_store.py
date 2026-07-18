@@ -9,11 +9,28 @@ class DimensionMismatchError(Exception):
 
 
 class VectorStore(Protocol):
-    async def upsert(self, text: str, vector: list[float]) -> None: ...
+    async def upsert(
+        self,
+        text: str,
+        vector: list[float],
+        metadata: dict[str, Any] | None = None,
+        scopes: list[str] | None = None,
+    ) -> None: ...
 
-    async def search(self, vector: list[float], top_k: int) -> list[dict[str, Any]]: ...
+    async def search(
+        self, vector: list[float], top_k: int, scope: str | None = None
+    ) -> list[dict[str, Any]]: ...
+
+    async def set_scopes(self, point_id: str, scopes: list[str]) -> None: ...
+
+    async def delete(self, point_id: str) -> None: ...
 
     async def check(self) -> None: ...
+
+
+def point_id(text: str) -> str:
+    # Deterministic id per text, so re-embedding the same text overwrites its point.
+    return str(uuid.UUID(hashlib.sha256(text.encode()).hexdigest()[:32]))
 
 
 class QdrantVectorStore:
@@ -31,11 +48,6 @@ class QdrantVectorStore:
         self.client = AsyncQdrantClient(url=url, timeout=10, check_compatibility=False)
         self.collection = collection
         self._ensured = False
-
-    @staticmethod
-    def _point_id(text: str) -> str:
-        # Deterministic id per text, so re-embedding the same text overwrites its point.
-        return str(uuid.UUID(hashlib.sha256(text.encode()).hexdigest()[:32]))
 
     async def _ensure_collection(self, dim: int) -> None:
         if self._ensured:
@@ -56,25 +68,68 @@ class QdrantVectorStore:
                 self.collection,
                 vectors_config=models.VectorParams(size=dim, distance=models.Distance.COSINE),
             )
+        # Keyword indexes so /search can filter by scope, and points can be looked up by
+        # their full content hash without relying on the truncated point-id UUID.
+        await self.client.create_payload_index(
+            self.collection, field_name="scopes", field_schema=models.PayloadSchemaType.KEYWORD
+        )
+        await self.client.create_payload_index(
+            self.collection,
+            field_name="content_hash",
+            field_schema=models.PayloadSchemaType.KEYWORD,
+        )
         self._ensured = True
 
-    async def upsert(self, text: str, vector: list[float]) -> None:
+    async def upsert(
+        self,
+        text: str,
+        vector: list[float],
+        metadata: dict[str, Any] | None = None,
+        scopes: list[str] | None = None,
+    ) -> None:
         await self._ensure_collection(len(vector))
         from qdrant_client import models
 
+        # "text" last so it always wins if caller-supplied metadata happens to collide —
+        # every payload this proxy writes must keep a real text key for /search to rely on.
+        payload = {
+            **(metadata or {}),
+            "content_hash": hashlib.sha256(text.encode()).hexdigest(),
+            "scopes": scopes or [],
+            "text": text,
+        }
         await self.client.upsert(
             self.collection,
-            points=[
-                models.PointStruct(id=self._point_id(text), vector=vector, payload={"text": text})
-            ],
+            points=[models.PointStruct(id=point_id(text), vector=vector, payload=payload)],
         )
 
-    async def search(self, vector: list[float], top_k: int) -> list[dict[str, Any]]:
+    async def search(
+        self, vector: list[float], top_k: int, scope: str | None = None
+    ) -> list[dict[str, Any]]:
         await self._ensure_collection(len(vector))
+        from qdrant_client import models
+
+        query_filter = None
+        if scope is not None:
+            query_filter = models.Filter(
+                must=[models.FieldCondition(key="scopes", match=models.MatchValue(value=scope))]
+            )
         result = await self.client.query_points(
-            self.collection, query=vector, limit=top_k, with_payload=True
+            self.collection,
+            query=vector,
+            limit=top_k,
+            with_payload=True,
+            query_filter=query_filter,
         )
         return [{"id": str(p.id), "score": p.score, "payload": p.payload} for p in result.points]
+
+    async def set_scopes(self, point_id: str, scopes: list[str]) -> None:
+        await self.client.set_payload(
+            self.collection, payload={"scopes": scopes}, points=[point_id]
+        )
+
+    async def delete(self, point_id: str) -> None:
+        await self.client.delete(self.collection, points_selector=[point_id])
 
     async def check(self) -> None:
         await self.client.get_collections()
