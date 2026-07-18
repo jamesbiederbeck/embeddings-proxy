@@ -1,0 +1,35 @@
+# Multi-backend configuration. Used when MODEL_NAME is NOT set in the environment
+# (legacy single-backend env vars take precedence — see CLAUDE.md). Point the proxy
+# at this file with CONFIG_FILE=/path/to/config.yaml (default: ./config.yaml).
+
+# Seconds between background health sweeps of every backend and vector store.
+# Overridable with the HEALTH_CHECK_INTERVAL env var.
+health_check_interval: 30
+
+# Priority-ordered: requests go to the first *healthy* backend matching the
+# requested model (or the first healthy one overall when no model is given).
+backends:
+  - name: llama-local            # unique instance name; defaults to `type`
+    type: llamacpp               # llamacpp | openai | transformers-inference
+    url: http://llama:8080
+    model: nomic-embed-text-v1.5
+    # Optional, for instruct-aware models: the task type this upstream is
+    # configured to serve (joins the cache key; stamped into payloads).
+    embedding_task: search_document
+
+  - name: openai
+    type: openai
+    model: text-embedding-3-small
+    # url defaults to https://api.openai.com for type: openai
+    api_key_env: OPENAI_API_KEY  # secrets stay in the environment, never in this file
+
+# Each store's collection holds vectors for exactly one model — that model is
+# the routing key sending /vectors and /search traffic to the right collection.
+vector_stores:
+  - name: qdrant-main
+    type: qdrant
+    url: http://qdrant:6333
+    collection: embeddings-nomic
+    model: nomic-embed-text-v1.5
+    metadata:                    # optional; stamped into every upserted payload
+      corpus: docs

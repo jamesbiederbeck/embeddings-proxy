@@ -7,7 +7,7 @@ COPY pyproject.toml uv.lock ./
 ARG UV_SYNC_EXTRA_ARGS=""
 RUN uv sync --locked --no-install-project --no-dev ${UV_SYNC_EXTRA_ARGS}
 
-COPY app.py backends.py vector_store.py provenance.py .
+COPY app.py backends.py vector_store.py provenance.py config.py registry.py .
 
 EXPOSE 8081
 # --no-sync: use the env baked at build time; a plain `uv run` would re-sync at
