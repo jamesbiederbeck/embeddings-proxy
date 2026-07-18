@@ -3,16 +3,19 @@ import httpx
 import pytest
 
 import app as app_module
+from registry import HealthStatus, Registry
 from vector_store import point_id
 
 
 class StubBackend:
-    name = "stub"
     type = "stub"
-    model = "stub-model"
-    embedding_task = None
 
-    def __init__(self, vector=None, healthy=True):
+    def __init__(
+        self, name="stub", model="stub-model", vector=None, healthy=True, embedding_task=None
+    ):
+        self.name = name
+        self.model = model
+        self.embedding_task = embedding_task
         self.vector = vector or [1.0, 2.0, 3.0]
         self.calls = 0
         self.healthy = healthy
@@ -27,7 +30,13 @@ class StubBackend:
 
 
 class StubVectorStore:
-    def __init__(self):
+    type = "stub-store"
+
+    def __init__(self, name="store", model="stub-model", collection="test-collection"):
+        self.name = name
+        self.model = model
+        self.collection = collection
+        self.base_metadata = {}
         self.upserted = []
         self.search_results = []
         self.scopes_set = []
@@ -51,21 +60,33 @@ class StubVectorStore:
         pass
 
 
-@pytest.fixture
-def stub_vector_store(monkeypatch):
-    store = StubVectorStore()
-    monkeypatch.setattr(app_module, "vector_store", store)
-    return store
+def register(reg, *, backend=None, store=None):
+    """Add a stub to the registry, marked healthy (as if the poller had seen it up)."""
+    if backend is not None:
+        reg.embedding.append(backend)
+        reg.health[backend.name] = HealthStatus(healthy=True, error=None)
+    if store is not None:
+        reg.stores.append(store)
+        reg.health[store.name] = HealthStatus(healthy=True, error=None)
 
 
 @pytest.fixture
 def stub_backend(monkeypatch):
     backend = StubBackend()
-    monkeypatch.setattr(app_module, "backend", backend)
+    reg = Registry([], [])
+    register(reg, backend=backend)
+    monkeypatch.setattr(app_module, "registry", reg)
     monkeypatch.setattr(
         app_module, "cache", fakeredis.aioredis.FakeRedis(decode_responses=True)
     )
     return backend
+
+
+@pytest.fixture
+def stub_vector_store(stub_backend):
+    store = StubVectorStore()
+    register(app_module.registry, store=store)
+    return store
 
 
 @pytest.fixture
@@ -284,23 +305,150 @@ async def test_embeddings_batch_input_preserves_order(api, stub_backend):
     assert stub_backend.calls == 2
 
 
-async def test_embeddings_model_override(api):
+async def test_embeddings_unknown_model_is_404(api):
     resp = await api.post("/v1/embeddings", json={"input": "hello", "model": "custom"})
-    assert resp.json()["model"] == "custom"
+    assert resp.status_code == 404
+
+
+async def test_embeddings_no_healthy_backend_is_503(api, stub_backend):
+    stub_backend.healthy = False
+    await app_module.registry.poll_once()
+    resp = await api.post("/v1/embeddings", json={"input": "hello"})
+    assert resp.status_code == 503
+
+
+async def test_embeddings_falls_over_to_next_healthy_backend_for_model(api, stub_backend):
+    fallback = StubBackend(name="fallback", model="stub-model", vector=[9.0])
+    register(app_module.registry, backend=fallback)
+    stub_backend.healthy = False
+    await app_module.registry.poll_once()
+
+    resp = await api.post("/v1/embeddings", json={"input": "hello", "model": "stub-model"})
+    assert resp.status_code == 200
+    assert resp.json()["data"][0]["embedding"] == [9.0]
+
+
+async def test_embeddings_backend_param_selects_by_name(api, stub_backend):
+    other = StubBackend(name="other", model="other-model", vector=[7.0])
+    register(app_module.registry, backend=other)
+
+    resp = await api.post("/v1/embeddings", json={"input": "hello", "backend": "other"})
+    assert resp.status_code == 200
+    assert resp.json()["model"] == "other-model"
+    assert resp.json()["data"][0]["embedding"] == [7.0]
+
+
+async def test_embeddings_unknown_backend_name_is_404(api):
+    resp = await api.post("/v1/embeddings", json={"input": "hello", "backend": "nope"})
+    assert resp.status_code == 404
+
+
+async def test_embeddings_backend_name_model_mismatch_is_404(api):
+    resp = await api.post(
+        "/v1/embeddings", json={"input": "hello", "backend": "stub", "model": "other-model"}
+    )
+    assert resp.status_code == 404
+
+
+async def test_embeddings_named_but_unhealthy_backend_is_503(api, stub_backend):
+    stub_backend.healthy = False
+    await app_module.registry.poll_once()
+    resp = await api.post("/v1/embeddings", json={"input": "hello", "backend": "stub"})
+    assert resp.status_code == 503
+
+
+async def test_embedding_task_gets_its_own_cache_entries(api, stub_backend):
+    # Same type and model as the default stub, but task-tagged: the cached vector for
+    # plain "hello" must not be returned for the code-task variant.
+    tasked = StubBackend(name="stub-code", model="stub-model", vector=[4.0], embedding_task="code")
+    register(app_module.registry, backend=tasked)
+
+    await api.post("/v1/embeddings", json={"input": "hello"})
+    resp = await api.post("/v1/embeddings", json={"input": "hello", "backend": "stub-code"})
+    assert resp.json()["data"][0]["embedding"] == [4.0]
+    assert tasked.calls == 1
+
+
+async def test_embedding_task_is_stamped_into_upserted_metadata(
+    api, stub_backend, stub_vector_store
+):
+    stub_backend.embedding_task = "code"
+    await api.post("/vectors", json={"text": "hello"})
+    _text, _vector, metadata = stub_vector_store.upserted[0]
+    assert metadata == {"embedding_task": "code"}
+
+
+async def test_vectors_routes_to_the_store_for_the_resolved_model(
+    api, stub_backend, stub_vector_store
+):
+    other_backend = StubBackend(name="b2", model="m2", vector=[5.0])
+    other_store = StubVectorStore(name="s2", model="m2", collection="c2")
+    register(app_module.registry, backend=other_backend, store=other_store)
+
+    resp = await api.post("/vectors", json={"text": "hello", "model": "m2"})
+    assert resp.status_code == 200
+    assert other_store.upserted == [("hello", [5.0], None)]
+    assert stub_vector_store.upserted == []
+
+
+async def test_backends_endpoint_lists_registry_with_health(api, stub_backend, stub_vector_store):
+    resp = await api.get("/backends")
+    assert resp.status_code == 200
+    assert resp.json()["backends"] == [
+        {
+            "name": "stub",
+            "type": "stub",
+            "kind": "embedding",
+            "model": "stub-model",
+            "embedding_task": None,
+            "healthy": True,
+            "error": None,
+        },
+        {
+            "name": "store",
+            "type": "stub-store",
+            "kind": "vector_store",
+            "model": "stub-model",
+            "collection": "test-collection",
+            "metadata": {},
+            "healthy": True,
+            "error": None,
+        },
+    ]
+
+
+async def test_backends_endpoint_filters_by_model_and_name(api, stub_backend, stub_vector_store):
+    other = StubBackend(name="other", model="other-model")
+    register(app_module.registry, backend=other)
+
+    by_model = await api.get("/backends", params={"model": "other-model"})
+    assert [e["name"] for e in by_model.json()["backends"]] == ["other"]
+
+    by_name = await api.get("/backends", params={"name": "store"})
+    assert [e["kind"] for e in by_name.json()["backends"]] == ["vector_store"]
+
+
+async def test_backends_endpoint_reports_unhealthy_backends(api, stub_backend):
+    stub_backend.healthy = False
+    await app_module.registry.poll_once()
+    entry = (await api.get("/backends")).json()["backends"][0]
+    assert entry["healthy"] is False
+    assert "backend down" in entry["error"]
 
 
 async def test_ready_ok(api):
     resp = await api.get("/.well-known/ready")
     assert resp.status_code == 200
-    assert resp.json()["checks"] == {"redis": "ok", "backend": "ok"}
+    assert resp.json()["checks"] == {"redis": "ok", "backend:stub": "ok"}
 
 
 async def test_ready_fails_when_backend_down(api, stub_backend):
     stub_backend.healthy = False
+    await app_module.registry.poll_once()
     resp = await api.get("/.well-known/ready")
     assert resp.status_code == 503
     assert resp.json()["checks"]["redis"] == "ok"
-    assert resp.json()["checks"]["backend"].startswith("error:")
+    assert resp.json()["checks"]["backend:stub"].startswith("error:")
 
 
 async def test_live_always_ok(api):
