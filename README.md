@@ -89,5 +89,5 @@ The proxy's compose healthcheck hits `/.well-known/ready`, so the container only
 
 ## CI
 
-- Pushes to any branch run lint + tests (`.gitea/workflows/test.yml`).
-- Tagged pushes (`v*`) trigger a Gitea Actions build that pushes an image to `git.hiddencove.xyz/victor/embeddings-proxy` (`.gitea/workflows/build.yml`).
+- Pushes to any branch run lint + tests (`.github/workflows/test.yml`, mirrored from `.gitea/workflows/test.yml`).
+- The author's own deployment additionally uses a Gitea Actions workflow (`.gitea/workflows/build.yml`) that builds and pushes a Docker image to a private registry on tagged (`v*`) pushes — that workflow is specific to that deployment, not required for local development or contributions.
