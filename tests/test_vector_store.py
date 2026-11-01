@@ -107,9 +107,24 @@ async def test_search_with_scope_builds_a_filter():
     await store.search([1.0, 2.0, 3.0], top_k=5, scope="repoA")
 
     query_filter = store.client.query_points.await_args.kwargs["query_filter"]
-    assert query_filter is not None
     assert query_filter.must[0].key == "scopes"
     assert query_filter.must[0].match.value == "repoA"
+
+
+async def test_search_without_score_threshold_passes_none():
+    store = make_store(collection_exists=True, existing_dim=3)
+    store.client.query_points.return_value = MagicMock(points=[])
+    await store.search([1.0, 2.0, 3.0], top_k=5)
+
+    assert store.client.query_points.await_args.kwargs["score_threshold"] is None
+
+
+async def test_search_with_score_threshold_forwards_it():
+    store = make_store(collection_exists=True, existing_dim=3)
+    store.client.query_points.return_value = MagicMock(points=[])
+    await store.search([1.0, 2.0, 3.0], top_k=5, score_threshold=0.75)
+
+    assert store.client.query_points.await_args.kwargs["score_threshold"] == 0.75
 
 
 async def test_ensure_collection_raises_on_dimension_mismatch():

@@ -42,12 +42,14 @@ class StubVectorStore:
         self.scopes_set = []
         self.deleted = []
         self.search_scopes = []
+        self.search_score_thresholds = []
 
     async def upsert(self, text, vector, metadata=None, scopes=None):
         self.upserted.append((text, vector, metadata))
 
-    async def search(self, vector, top_k, scope=None):
+    async def search(self, vector, top_k, scope=None, score_threshold=None):
         self.search_scopes.append(scope)
+        self.search_score_thresholds.append(score_threshold)
         return self.search_results
 
     async def set_scopes(self, point_id, scopes):
@@ -216,6 +218,22 @@ async def test_search_passes_scope_through_to_the_store(api, stub_backend, stub_
     resp = await api.post("/search", json={"text": "hi", "scope": "repoA"})
     assert resp.status_code == 200
     assert stub_vector_store.search_scopes == ["repoA"]
+
+
+async def test_search_passes_score_threshold_through_to_the_store(
+    api, stub_backend, stub_vector_store
+):
+    resp = await api.post("/search", json={"text": "hi", "score_threshold": 0.8})
+    assert resp.status_code == 200
+    assert stub_vector_store.search_score_thresholds == [0.8]
+
+
+async def test_search_without_score_threshold_defaults_to_none(
+    api, stub_backend, stub_vector_store
+):
+    resp = await api.post("/search", json={"text": "hi"})
+    assert resp.status_code == 200
+    assert stub_vector_store.search_score_thresholds == [None]
 
 
 async def test_search_attaches_locations_from_provenance(api, stub_backend, stub_vector_store):

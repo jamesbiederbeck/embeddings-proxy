@@ -31,7 +31,11 @@ class VectorStoreBackend(Backend):
         raise NotImplementedError
 
     async def search(
-        self, vector: list[float], top_k: int, scope: str | None = None
+        self,
+        vector: list[float],
+        top_k: int,
+        scope: str | None = None,
+        score_threshold: float | None = None,
     ) -> list[dict[str, Any]]:
         raise NotImplementedError
 
@@ -126,7 +130,11 @@ class QdrantVectorStore(VectorStoreBackend):
         )
 
     async def search(
-        self, vector: list[float], top_k: int, scope: str | None = None
+        self,
+        vector: list[float],
+        top_k: int,
+        scope: str | None = None,
+        score_threshold: float | None = None,
     ) -> list[dict[str, Any]]:
         await self._ensure_collection(len(vector))
         from qdrant_client import models
@@ -142,6 +150,7 @@ class QdrantVectorStore(VectorStoreBackend):
             limit=top_k,
             with_payload=True,
             query_filter=query_filter,
+            score_threshold=score_threshold,
         )
         return [{"id": str(p.id), "score": p.score, "payload": p.payload} for p in result.points]
 

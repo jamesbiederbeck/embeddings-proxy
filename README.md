@@ -61,6 +61,7 @@ With `VECTOR_STORE=qdrant` + `QDRANT_URL` + `QDRANT_COLLECTION`:
 
 - Every text embedded via `/vectors` is upserted into the collection with a deterministic id (derived from the text hash) and the text stored in the payload. Indexing is **best-effort**: a Qdrant outage is logged but does not fail the `/vectors` response.
 - `POST /search {"text": "...", "top_k": 5}` returns `{"text", "results": [{"id", "score", "payload"}]}`.
+- `score_threshold` (optional float) drops results scoring below it before `top_k` is applied — e.g. `{"text": "...", "top_k": 5, "score_threshold": 0.75}`. It's a raw cosine-similarity cutoff (the collection's distance metric is `COSINE`), not a normalized/calibrated confidence value, so a sensible threshold depends on your embedding model. Omitting it preserves today's behavior (no filtering beyond `top_k`); setting it can mean `results` comes back empty when nothing clears the bar.
 - The collection is auto-created on first use, sized to the backend's vector dimension (cosine distance). If an existing collection's dimension doesn't match the backend's, requests fail loudly rather than storing garbage.
 
 `qdrant-client` is an optional extra (`uv sync --extra qdrant` locally, or build the image with `--build-arg UV_SYNC_EXTRA_ARGS="--extra qdrant"`). The CI-published image (`v0.2.1+`) is built with this extra baked in, so `VECTOR_STORE=qdrant` works out of the box; a plain `docker build` without the build arg stays lean.
