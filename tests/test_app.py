@@ -44,6 +44,8 @@ class StubVectorStore:
         self.search_scopes = []
         self.search_score_thresholds = []
         self.search_exacts = []
+        self.score_results = []
+        self.score_calls = []
 
     async def upsert(self, text, vector, metadata=None, scopes=None):
         self.upserted.append((text, vector, metadata))
@@ -53,6 +55,10 @@ class StubVectorStore:
         self.search_score_thresholds.append(score_threshold)
         self.search_exacts.append(exact)
         return self.search_results
+
+    async def search_scores(self, vector, scope=None, limit=10000):
+        self.score_calls.append((scope, limit))
+        return self.score_results
 
     async def set_scopes(self, point_id, scopes):
         self.scopes_set.append((point_id, scopes))
@@ -248,6 +254,42 @@ async def test_search_without_exact_defaults_to_false(api, stub_backend, stub_ve
     resp = await api.post("/search", json={"text": "hi"})
     assert resp.status_code == 200
     assert stub_vector_store.search_exacts == [False]
+
+
+async def test_search_without_histogram_omits_the_score_scan(api, stub_backend, stub_vector_store):
+    resp = await api.post("/search", json={"text": "hi"})
+    assert resp.status_code == 200
+    assert "histogram" not in resp.json()
+    assert stub_vector_store.score_calls == []
+
+
+async def test_search_with_histogram_adds_a_histogram_field(api, stub_backend, stub_vector_store):
+    stub_vector_store.score_results = [0.9, 0.85, 0.2, 0.1, 0.15, 0.88, 0.05, 0.92, 0.12, 0.3]
+    resp = await api.post("/search", json={"text": "hi", "histogram": True, "scope": "repoA"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert stub_vector_store.score_calls == [("repoA", 10000)]
+    assert body["histogram"]["n"] == 10
+    assert "buckets" in body["histogram"]
+    assert "stats" in body["histogram"]
+
+
+async def test_search_with_histogram_respects_histogram_limit(
+    api, stub_backend, stub_vector_store
+):
+    stub_vector_store.score_results = [0.5] * 20
+    resp = await api.post("/search", json={"text": "hi", "histogram": True, "histogram_limit": 50})
+    assert resp.status_code == 200
+    assert stub_vector_store.score_calls == [(None, 50)]
+
+
+async def test_search_with_histogram_and_empty_scope_returns_none(
+    api, stub_backend, stub_vector_store
+):
+    stub_vector_store.score_results = []
+    resp = await api.post("/search", json={"text": "hi", "histogram": True})
+    assert resp.status_code == 200
+    assert resp.json()["histogram"] is None
 
 
 async def test_search_attaches_locations_from_provenance(api, stub_backend, stub_vector_store):

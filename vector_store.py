@@ -40,6 +40,14 @@ class VectorStoreBackend(Backend):
     ) -> list[dict[str, Any]]:
         raise NotImplementedError
 
+    async def search_scores(
+        self,
+        vector: list[float],
+        scope: str | None = None,
+        limit: int = 10000,
+    ) -> list[float]:
+        raise NotImplementedError
+
     async def set_scopes(self, point_id: str, scopes: list[str]) -> None:
         raise NotImplementedError
 
@@ -156,6 +164,34 @@ class QdrantVectorStore(VectorStoreBackend):
             search_params=models.SearchParams(exact=True) if exact else None,
         )
         return [{"id": str(p.id), "score": p.score, "payload": p.payload} for p in result.points]
+
+    async def search_scores(
+        self,
+        vector: list[float],
+        scope: str | None = None,
+        limit: int = 10000,
+    ) -> list[float]:
+        # Used by /search's `histogram` field (TICKET-009): always exact, since
+        # distributional stats are meaningless over an HNSW-approximated subset, and
+        # with_payload/with_vectors off since only the score values themselves matter.
+        await self._ensure_collection(len(vector))
+        from qdrant_client import models
+
+        query_filter = None
+        if scope is not None:
+            query_filter = models.Filter(
+                must=[models.FieldCondition(key="scopes", match=models.MatchValue(value=scope))]
+            )
+        result = await self.client.query_points(
+            self.collection,
+            query=vector,
+            limit=limit,
+            with_payload=False,
+            with_vectors=False,
+            query_filter=query_filter,
+            search_params=models.SearchParams(exact=True),
+        )
+        return [p.score for p in result.points]
 
     async def set_scopes(self, point_id: str, scopes: list[str]) -> None:
         await self.client.set_payload(

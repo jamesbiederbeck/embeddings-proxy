@@ -16,6 +16,7 @@ from pydantic import BaseModel, model_validator
 import provenance
 from backends import EmbeddingBackend, build_backends
 from config import load_config
+from histogram import histogram_from_sims
 from registry import NoHealthyBackendError, NotConfiguredError, Registry
 from vector_store import DimensionMismatchError, build_vector_stores, point_id
 
@@ -69,6 +70,8 @@ class SearchRequest(BaseModel):
     scope: str | None = None
     score_threshold: float | None = None
     exact: bool = False
+    histogram: bool = False
+    histogram_limit: int = 10000
     model: str | None = None
     backend: str | None = None
 
@@ -162,7 +165,7 @@ async def search(req: SearchRequest):
     locations = await provenance.get_locations(cache, [r["id"] for r in results])
     # "content_hash"/"scopes" are this proxy's own bookkeeping fields, not caller metadata.
     reserved = {"text", "content_hash", "scopes"}
-    return {
+    response = {
         "query": req.text,
         "results": [
             {
@@ -177,6 +180,14 @@ async def search(req: SearchRequest):
             for r in results
         ],
     }
+
+    if req.histogram:
+        # Always exact (regardless of req.exact) and scoped to req.scope — distributional
+        # stats over an HNSW-approximated or wrongly-scoped subset would be meaningless.
+        scores = await vector_store.search_scores(vector, req.scope, req.histogram_limit)
+        response["histogram"] = histogram_from_sims(scores) if scores else None
+
+    return response
 
 
 @app.delete("/locations")

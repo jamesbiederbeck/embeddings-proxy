@@ -144,6 +144,31 @@ async def test_search_with_exact_forces_brute_force_search_params():
     assert search_params.exact is True
 
 
+async def test_search_scores_is_always_exact_with_no_payload_or_vectors():
+    store = make_store(collection_exists=True, existing_dim=3)
+    store.client.query_points.return_value = MagicMock(
+        points=[MagicMock(score=0.9), MagicMock(score=0.5)]
+    )
+    scores = await store.search_scores([1.0, 2.0, 3.0], limit=100)
+
+    kwargs = store.client.query_points.await_args.kwargs
+    assert kwargs["limit"] == 100
+    assert kwargs["with_payload"] is False
+    assert kwargs["with_vectors"] is False
+    assert kwargs["search_params"].exact is True
+    assert scores == [0.9, 0.5]
+
+
+async def test_search_scores_with_scope_builds_a_filter():
+    store = make_store(collection_exists=True, existing_dim=3)
+    store.client.query_points.return_value = MagicMock(points=[])
+    await store.search_scores([1.0, 2.0, 3.0], scope="repoA")
+
+    query_filter = store.client.query_points.await_args.kwargs["query_filter"]
+    assert query_filter.must[0].key == "scopes"
+    assert query_filter.must[0].match.value == "repoA"
+
+
 async def test_ensure_collection_raises_on_dimension_mismatch():
     from vector_store import DimensionMismatchError
 
