@@ -68,6 +68,7 @@ class SearchRequest(BaseModel):
     top_k: int = 5
     scope: str | None = None
     score_threshold: float | None = None
+    exact: bool = False
     model: str | None = None
     backend: str | None = None
 
@@ -155,7 +156,9 @@ async def search(req: SearchRequest):
         )
 
     vector, _ = await get_vector(backend, req.text)
-    results = await vector_store.search(vector, req.top_k, req.scope, req.score_threshold)
+    results = await vector_store.search(
+        vector, req.top_k, req.scope, req.score_threshold, req.exact
+    )
     locations = await provenance.get_locations(cache, [r["id"] for r in results])
     # "content_hash"/"scopes" are this proxy's own bookkeeping fields, not caller metadata.
     reserved = {"text", "content_hash", "scopes"}

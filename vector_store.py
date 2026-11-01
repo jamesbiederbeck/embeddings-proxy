@@ -36,6 +36,7 @@ class VectorStoreBackend(Backend):
         top_k: int,
         scope: str | None = None,
         score_threshold: float | None = None,
+        exact: bool = False,
     ) -> list[dict[str, Any]]:
         raise NotImplementedError
 
@@ -135,6 +136,7 @@ class QdrantVectorStore(VectorStoreBackend):
         top_k: int,
         scope: str | None = None,
         score_threshold: float | None = None,
+        exact: bool = False,
     ) -> list[dict[str, Any]]:
         await self._ensure_collection(len(vector))
         from qdrant_client import models
@@ -151,6 +153,7 @@ class QdrantVectorStore(VectorStoreBackend):
             with_payload=True,
             query_filter=query_filter,
             score_threshold=score_threshold,
+            search_params=models.SearchParams(exact=True) if exact else None,
         )
         return [{"id": str(p.id), "score": p.score, "payload": p.payload} for p in result.points]
 

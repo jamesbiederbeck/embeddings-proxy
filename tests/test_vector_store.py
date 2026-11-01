@@ -127,6 +127,23 @@ async def test_search_with_score_threshold_forwards_it():
     assert store.client.query_points.await_args.kwargs["score_threshold"] == 0.75
 
 
+async def test_search_without_exact_passes_no_search_params():
+    store = make_store(collection_exists=True, existing_dim=3)
+    store.client.query_points.return_value = MagicMock(points=[])
+    await store.search([1.0, 2.0, 3.0], top_k=5)
+
+    assert store.client.query_points.await_args.kwargs["search_params"] is None
+
+
+async def test_search_with_exact_forces_brute_force_search_params():
+    store = make_store(collection_exists=True, existing_dim=3)
+    store.client.query_points.return_value = MagicMock(points=[])
+    await store.search([1.0, 2.0, 3.0], top_k=5, exact=True)
+
+    search_params = store.client.query_points.await_args.kwargs["search_params"]
+    assert search_params.exact is True
+
+
 async def test_ensure_collection_raises_on_dimension_mismatch():
     from vector_store import DimensionMismatchError
 

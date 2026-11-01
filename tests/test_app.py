@@ -43,13 +43,15 @@ class StubVectorStore:
         self.deleted = []
         self.search_scopes = []
         self.search_score_thresholds = []
+        self.search_exacts = []
 
     async def upsert(self, text, vector, metadata=None, scopes=None):
         self.upserted.append((text, vector, metadata))
 
-    async def search(self, vector, top_k, scope=None, score_threshold=None):
+    async def search(self, vector, top_k, scope=None, score_threshold=None, exact=False):
         self.search_scopes.append(scope)
         self.search_score_thresholds.append(score_threshold)
+        self.search_exacts.append(exact)
         return self.search_results
 
     async def set_scopes(self, point_id, scopes):
@@ -234,6 +236,18 @@ async def test_search_without_score_threshold_defaults_to_none(
     resp = await api.post("/search", json={"text": "hi"})
     assert resp.status_code == 200
     assert stub_vector_store.search_score_thresholds == [None]
+
+
+async def test_search_passes_exact_through_to_the_store(api, stub_backend, stub_vector_store):
+    resp = await api.post("/search", json={"text": "hi", "exact": True})
+    assert resp.status_code == 200
+    assert stub_vector_store.search_exacts == [True]
+
+
+async def test_search_without_exact_defaults_to_false(api, stub_backend, stub_vector_store):
+    resp = await api.post("/search", json={"text": "hi"})
+    assert resp.status_code == 200
+    assert stub_vector_store.search_exacts == [False]
 
 
 async def test_search_attaches_locations_from_provenance(api, stub_backend, stub_vector_store):
